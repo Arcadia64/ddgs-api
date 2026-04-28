@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Arcadia64/ddgs-api.git",
+    "url": "git+https://github.com/Arcadia64/ddgs-api.git",
     "directory": "pi-ddgs"
   },
   "homepage": "https://github.com/Arcadia64/ddgs-api/tree/main/pi-ddgs",
@@ -30,7 +30,9 @@
     "README.md"
   ],
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
