@@ -1,4 +1,7 @@
+import asyncio
+import time
 from contextlib import asynccontextmanager
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
@@ -29,18 +32,123 @@ def rewrite_url(url: str) -> str:
         pass
     return url
 
+
+# Long-lived browser processes leak memory regardless of activity (renderer caches,
+# zombie children, fragmentation). The pool rotates browsers proactively but never
+# closes one that's still serving a request — old browsers stay alive until their
+# last in-flight request finishes. A failed relaunch keeps the current browser.
+class BrowserPool:
+    def __init__(
+        self,
+        launch: Callable[[], Awaitable[tuple[Any, Callable[[], Awaitable[None]]]]],
+        max_requests: int,
+        max_age_seconds: float,
+        name: str,
+    ):
+        self._launch = launch
+        self._max_requests = max_requests
+        self._max_age = max_age_seconds
+        self._name = name
+        self._current: Any = None
+        # id(browser) -> (browser, close_fn, in_flight_count)
+        self._tracked: dict[int, tuple[Any, Callable[[], Awaitable[None]], int]] = {}
+        self._current_count = 0
+        self._current_started_at = 0.0
+        self._rotating = False
+
+    async def start(self):
+        browser, close = await self._launch()
+        self._current = browser
+        self._tracked[id(browser)] = (browser, close, 0)
+        self._current_started_at = time.monotonic()
+
+    async def stop(self):
+        for _, (_, close, _) in list(self._tracked.items()):
+            try:
+                await close()
+            except Exception as e:
+                print(f"{self._name} close failed during shutdown: {e}")
+        self._tracked.clear()
+        self._current = None
+
+    @asynccontextmanager
+    async def acquire(self):
+        if self._current is None:
+            raise RuntimeError(f"{self._name} pool not started")
+
+        if self._should_rotate():
+            self._rotating = True
+            asyncio.create_task(self._rotate())
+
+        # Snapshot + bump must be atomic; safe here because there are no awaits
+        # between reading self._current and writing the in-flight count.
+        browser = self._current
+        bid = id(browser)
+        b, close, count = self._tracked[bid]
+        self._tracked[bid] = (b, close, count + 1)
+        self._current_count += 1
+
+        try:
+            yield browser
+        finally:
+            b, close, count = self._tracked[bid]
+            count -= 1
+            if browser is not self._current and count == 0:
+                del self._tracked[bid]
+                asyncio.create_task(self._close_quiet(close))
+            else:
+                self._tracked[bid] = (b, close, count)
+
+    def _should_rotate(self) -> bool:
+        if self._current is None or self._rotating:
+            return False
+        age = time.monotonic() - self._current_started_at
+        return self._current_count >= self._max_requests or age >= self._max_age
+
+    async def _rotate(self):
+        try:
+            try:
+                new_browser, new_close = await self._launch()
+            except Exception as e:
+                # Reset counters so we don't retry on every subsequent request.
+                print(f"{self._name} rotation launch failed, keeping current: {e}")
+                self._current_started_at = time.monotonic()
+                self._current_count = 0
+                return
+
+            old_browser = self._current
+            old_id = id(old_browser)
+            self._current = new_browser
+            self._tracked[id(new_browser)] = (new_browser, new_close, 0)
+            self._current_count = 0
+            self._current_started_at = time.monotonic()
+
+            _, old_close, old_count = self._tracked[old_id]
+            if old_count == 0:
+                del self._tracked[old_id]
+                asyncio.create_task(self._close_quiet(old_close))
+            # else: last-out request closes it on release
+        finally:
+            self._rotating = False
+
+    async def _close_quiet(self, close):
+        try:
+            await close()
+        except Exception as e:
+            print(f"{self._name} close failed: {e}")
+
+
 playwright_instance = None
-browser = None
+chrome_pool: BrowserPool | None = None
+camoufox_pool: BrowserPool | None = None
 stealth = Stealth()
+# Camoufox is heavier and flakier under parallel page load than Chrome.
+# Bound concurrent renders so bursts queue instead of thrashing the browser.
+camoufox_semaphore = asyncio.Semaphore(2)
 
-camoufox_manager = None
-camoufox_browser = None
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global playwright_instance, browser, camoufox_manager, camoufox_browser
-
-    playwright_instance = await async_playwright().start()
+async def _launch_chromium():
+    assert playwright_instance is not None
     # channel="chrome" launches real Google Chrome (installed via `playwright install chrome`)
     # rather than the bundled Chromium. Real Chrome has more realistic fingerprint surface
     # area (Widevine, fonts, codecs) which helps with anti-bot detection.
@@ -49,28 +157,54 @@ async def lifespan(app: FastAPI):
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
     )
+    return browser, browser.close
 
+
+async def _launch_camoufox():
     # Camoufox = Firefox fork patched at C++ level against fingerprinting. Slower to launch
     # but far more resistant to managed-challenge anti-bot than Playwright Chrome.
-    # Manual __aenter__/__aexit__ keeps it alive across the app lifespan.
-    camoufox_manager = AsyncCamoufox(headless=True, geoip=True)
+    manager = AsyncCamoufox(headless=True, geoip=True)
+    browser = await manager.__aenter__()
+
+    async def close():
+        await manager.__aexit__(None, None, None)
+
+    return browser, close
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global playwright_instance, chrome_pool, camoufox_pool
+
+    playwright_instance = await async_playwright().start()
+
+    chrome_pool = BrowserPool(
+        launch=_launch_chromium,
+        max_requests=200,
+        max_age_seconds=30 * 60,
+        name="chrome",
+    )
+    await chrome_pool.start()
+
+    camoufox_pool = BrowserPool(
+        launch=_launch_camoufox,
+        max_requests=50,
+        max_age_seconds=60 * 60,
+        name="camoufox",
+    )
     try:
-        camoufox_browser = await camoufox_manager.__aenter__()
+        await camoufox_pool.start()
     except Exception as e:
-        print(f"Camoufox launch failed: {e}")
-        camoufox_manager = None
-        camoufox_browser = None
+        print(f"Camoufox launch failed, /fetch?engine=camoufox will be unavailable: {e}")
+        camoufox_pool = None
 
     try:
         yield
     finally:
-        if camoufox_manager is not None:
-            try:
-                await camoufox_manager.__aexit__(None, None, None)
-            except Exception:
-                pass
-        if browser is not None:
-            await browser.close()
+        if camoufox_pool is not None:
+            await camoufox_pool.stop()
+        if chrome_pool is not None:
+            await chrome_pool.stop()
         if playwright_instance is not None:
             await playwright_instance.stop()
 
@@ -157,48 +291,50 @@ def extract_clean_text(html: str):
 
 async def fetch_camoufox(url: str, timeout_ms: int = 30000):
     """Fetch via Camoufox (anti-fingerprint Firefox), returning (title, clean_text)."""
-    if camoufox_browser is None:
+    if camoufox_pool is None:
         raise RuntimeError("Camoufox not available")
-    page = await camoufox_browser.new_page()
-    try:
-        await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+    async with camoufox_semaphore, camoufox_pool.acquire() as browser:
+        context = await browser.new_context()
         try:
-            await page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
-        html = await page.content()
-        return extract_clean_text(html)
-    finally:
-        await page.close()
+            page = await context.new_page()
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            html = await page.content()
+            return extract_clean_text(html)
+        finally:
+            await context.close()
 
 
 async def fetch_rendered(url: str, timeout_ms: int = 30000):
     """Fetch via headless Chromium, returning (title, clean_text)."""
-    if browser is None:
+    if chrome_pool is None:
         raise RuntimeError("Browser not initialized")
-
-    context = await browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-        viewport={"width": 1280, "height": 800},
-        locale="en-US",
-    )
-    await stealth.apply_stealth_async(context)
-    try:
-        page = await context.new_page()
-        await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-        # Best-effort wait for the SPA to settle. Many sites never go fully idle,
-        # so we cap this and proceed regardless.
+    async with chrome_pool.acquire() as browser:
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+        await stealth.apply_stealth_async(context)
         try:
-            await page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
-        html = await page.content()
-        return extract_clean_text(html)
-    finally:
-        await context.close()
+            page = await context.new_page()
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            # Best-effort wait for the SPA to settle. Many sites never go fully idle,
+            # so we cap this and proceed regardless.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            html = await page.content()
+            return extract_clean_text(html)
+        finally:
+            await context.close()
 
 
 @app.get("/fetch")
