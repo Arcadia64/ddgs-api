@@ -15,18 +15,35 @@ See the [project README](../README.md) for the full picture (backend, architectu
 
 ## Install
 
-1. Make sure the backend container is running (`docker compose up -d --build` in the repo root).
-2. Add this directory's absolute path to `packages` in `~/.pi/agent/settings.json`:
+You need the backend running first (`docker compose up -d --build` in the [repo root](../README.md)).
 
-   ```json
-   {
-     "packages": [
-       "C:/absolute/path/to/ddgs-api/pi-ddgs"
-     ]
-   }
-   ```
+### Option 1 — npm (cleanest)
 
-3. Reload Pi.
+```bash
+pi install npm:@arcadia64/pi-ddgs
+```
+
+Or add it directly to `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": ["npm:@arcadia64/pi-ddgs"]
+}
+```
+
+Pi auto-installs missing packages on startup.
+
+### Option 2 — local path (development)
+
+Clone the repo and add the absolute path to `pi-ddgs/` to `packages`:
+
+```json
+{
+  "packages": ["C:/absolute/path/to/ddgs-api/pi-ddgs"]
+}
+```
+
+Reload Pi.
 
 ## Config
 

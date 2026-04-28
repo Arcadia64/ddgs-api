@@ -39,17 +39,33 @@ First build takes 5-10 min (downloads Chromium, Chrome, Camoufox + GeoIP). Image
 
 ### 2. Register the extension with Pi
 
-Add the path to the `packages` array in `~/.pi/agent/settings.json`:
+**Option A — npm (cleanest):**
+
+```bash
+pi install npm:@arcadia64/pi-ddgs
+```
+
+Or edit `~/.pi/agent/settings.json` directly:
 
 ```json
 {
-  "packages": [
-    "C:/path/to/ddgs-api/pi-ddgs"
-  ]
+  "packages": ["npm:@arcadia64/pi-ddgs"]
 }
 ```
 
-Reload Pi (close and reopen, or `/reload`). The four tools will be available.
+Pi auto-installs missing packages on startup.
+
+**Option B — local path (for development):**
+
+Clone the repo and add the path to `pi-ddgs/` to `packages`:
+
+```json
+{
+  "packages": ["C:/path/to/ddgs-api/pi-ddgs"]
+}
+```
+
+Reload Pi. The four tools will be available.
 
 ### 3. (Optional) Drop a config at `~/.pi/ddgs.json`
 
@@ -85,18 +101,16 @@ The extension and the backend can be on the same machine or split.
 
 **Same-machine setup (simplest):**
 
-1. Copy or `git clone` this repo to the new machine.
-2. `docker compose up -d --build`.
-3. Add `<path>/pi-ddgs` to `packages` in `~/.pi/agent/settings.json`.
-4. Reload Pi.
+1. Clone the repo and `docker compose up -d --build`.
+2. Add `"npm:@arcadia64/pi-ddgs"` to `packages` in `~/.pi/agent/settings.json` (or use a local path if you prefer dev mode).
+3. Reload Pi.
 
 **Split setup (extension on machine A, backend on machine B):**
 
 1. Run `docker compose up -d --build` on machine B. Make sure the firewall allows inbound on port 8091.
-2. On machine A, copy the `pi-ddgs/` directory only.
-3. Add its path to `~/.pi/agent/settings.json` `packages`.
-4. Create `~/.pi/ddgs.json` on machine A and set `"ddgsApiUrl": "http://<machine-B-ip>:8091"`.
-5. Reload Pi.
+2. On machine A, add `"npm:@arcadia64/pi-ddgs"` to `~/.pi/agent/settings.json` `packages`.
+3. Create `~/.pi/ddgs.json` on machine A with `"ddgsApiUrl": "http://<machine-B-ip>:8091"`.
+4. Reload Pi.
 
 ## Backend endpoints
 
