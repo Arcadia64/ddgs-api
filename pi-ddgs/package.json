@@ -1,0 +1,14 @@
+{
+  "name": "pi-ddgs",
+  "version": "1.0.0",
+  "description": "Web search via local DDG API — no rate limits, no captcha, completely free",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}

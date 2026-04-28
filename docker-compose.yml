@@ -1,0 +1,8 @@
+services:
+  ddgs-api:
+    build: .
+    ports:
+      - "8091:8000"
+    restart: unless-stopped
+    mem_limit: 2g
+    memswap_limit: 2g
