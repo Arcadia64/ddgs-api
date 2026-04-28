@@ -1,8 +1,8 @@
 # pi-ddgs
 
-Pi (`pi-coding-agent`) extension that gives the agent web search and page fetch via the local `ddgs-api` Docker backend.
+Pi ([`pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)) extension that gives the agent web search and page fetch via a local Docker backend with a three-tier anti-bot fallback (curl_cffi → real Chrome → Camoufox).
 
-See the [project README](../README.md) for the full picture (backend, architecture, anti-bot strategy).
+**Source / backend / docs:** [github.com/Arcadia64/ddgs-api](https://github.com/Arcadia64/ddgs-api) — the Docker backend lives there too. This package is the Pi extension half; you'll want to clone the repo and run the backend container alongside it.
 
 ## Tools
 
@@ -15,7 +15,13 @@ See the [project README](../README.md) for the full picture (backend, architectu
 
 ## Install
 
-You need the backend running first (`docker compose up -d --build` in the [repo root](../README.md)).
+You need the backend running first. Clone [the repo](https://github.com/Arcadia64/ddgs-api) and run:
+
+```bash
+docker compose up -d --build
+```
+
+Then install the Pi extension.
 
 ### Option 1 — npm (cleanest)
 
@@ -35,7 +41,7 @@ Pi auto-installs missing packages on startup.
 
 ### Option 2 — local path (development)
 
-Clone the repo and add the absolute path to `pi-ddgs/` to `packages`:
+Add the absolute path to the cloned `pi-ddgs/` directory to `packages`:
 
 ```json
 {
@@ -47,7 +53,7 @@ Reload Pi.
 
 ## Config
 
-Optional. Defaults work without a file. Drop a JSON file at `~/.pi/ddgs.json` to override any field — see the [project README's config table](../README.md#3-optional-drop-a-config-at-pidgsjson) for the full list.
+Optional. Defaults work without a file. Drop a JSON file at `~/.pi/ddgs.json` to override any field — see the [full config table in the project README](https://github.com/Arcadia64/ddgs-api#3-optional-drop-a-config-at-pidgsjson).
 
 Common overrides:
 
@@ -58,3 +64,7 @@ Common overrides:
   "safesearch": "off"
 }
 ```
+
+## License
+
+MIT
